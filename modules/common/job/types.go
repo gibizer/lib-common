@@ -26,6 +26,14 @@ const (
 	defaultTTL int32 = 10 * 60 // 10 minutes
 )
 
+type JobStatus int
+
+const (
+	Running   JobStatus = iota
+	Failed    JobStatus = iota
+	Succeeded JobStatus = iota
+)
+
 // Job -
 type Job struct {
 	job        *batchv1.Job
@@ -35,4 +43,5 @@ type Job struct {
 	beforeHash string
 	hash       string
 	changed    bool
+	exists     bool
 }

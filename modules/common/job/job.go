@@ -28,10 +28,7 @@ import (
 
 	"github.com/openstack-k8s-operators/lib-common/modules/common/helper"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/util"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-
-	"errors"
 )
 
 // NewJob returns an initialized Job.
@@ -50,14 +47,15 @@ func NewJob(
 		timeout:    time.Duration(timeout) * time.Second, // timeout to set in s to reconcile
 		beforeHash: beforeHash,
 		changed:    false,
+		exists:     false,
 	}
 }
 
-// createJob - creates job, reconciles after Xs if object won't exist.
+// createJob - creates job
 func (j *Job) createJob(
 	ctx context.Context,
 	h *helper.Helper,
-) (ctrl.Result, error) {
+) (JobStatus, error) {
 	op, err := controllerutil.CreateOrPatch(ctx, h.GetClient(), j.job, func() error {
 		err := controllerutil.SetControllerReference(h.GetBeforeObject(), j.job, h.GetScheme())
 		if err != nil {
@@ -68,17 +66,17 @@ func (j *Job) createJob(
 	})
 	if err != nil {
 		if k8s_errors.IsNotFound(err) {
-			h.GetLogger().Info(fmt.Sprintf("Job %s not found, reconcile in %s", j.job.Name, j.timeout))
-			return ctrl.Result{RequeueAfter: j.timeout}, nil
+			h.GetLogger().Info(fmt.Sprintf("Job %s not found", j.job.Name))
+			return Running, nil
 		}
-		return ctrl.Result{}, err
+		return Failed, err
 	}
 	if op != controllerutil.OperationResultNone {
 		h.GetLogger().Info(fmt.Sprintf("Job %s %s - %s", j.jobType, j.job.Name, op))
-		return ctrl.Result{RequeueAfter: j.timeout}, nil
+		return Running, nil
 	}
 
-	return ctrl.Result{}, nil
+	return Running, nil
 }
 
 func (j *Job) defaultTTL() {
@@ -113,13 +111,12 @@ func (j *Job) defaultTTL() {
 func (j *Job) DoJob(
 	ctx context.Context,
 	h *helper.Helper,
-) (ctrl.Result, error) {
-	var ctrlResult ctrl.Result
+) (JobStatus, error) {
 	var err error
 
 	j.hash, err = util.ObjectHash(j.job)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("error calculating %s hash: %v", j.jobType, err)
+		return Failed, fmt.Errorf("error calculating %s hash: %v", j.jobType, err)
 	}
 
 	// if the hash changed the job should run
@@ -142,43 +139,58 @@ func (j *Job) DoJob(
 	//
 	job, err := GetJobWithName(ctx, h, j.job.Name, j.job.Namespace)
 	if err != nil && !k8s_errors.IsNotFound(err) {
-		return ctrl.Result{}, err
+		return Failed, err
 	}
 
-	wait := false
-	if !k8s_errors.IsNotFound(err) {
-		// if job exist, wait for it to finish
-		// for now we do not expect the job to change while running
-		wait = true
-	} else if j.changed {
-		// if job changed, create it and wait for it to finish
-		ctrlResult, err = j.createJob(ctx, h)
+	// NOTE(gibi): we don't support changing a job while it is running.
+	if k8s_errors.IsNotFound(err) && j.changed {
+		// if job's hash is changed and we haven't started a job yet then we
+		// need to create a new job
+		status, err := j.createJob(ctx, h)
 		if err != nil {
-			return ctrlResult, err
+			return status, err
 		}
-		wait = true
+		j.exists = true
 	}
 
-	if wait {
-		ctrlResult, err := waitOnJob(ctx, h, j.job.Name, j.job.Namespace, j.timeout)
-		if (ctrlResult != ctrl.Result{}) {
-			return ctrlResult, nil
-		}
+	if err == nil { // so there is a Job either in progress or finished
+		j.exists = true
+		j.job = job
+
+		// allow updating TTLSecondsAfterFinished even after the job is finished
+		_, err = controllerutil.CreateOrPatch(ctx, h.GetClient(), job, func() error {
+			job.Spec.TTLSecondsAfterFinished = j.job.Spec.TTLSecondsAfterFinished
+			return nil
+		})
 		if err != nil {
-			return ctrl.Result{}, err
+			return Failed, err
 		}
 	}
 
-	// allow updating TTLSecondsAfterFinished even after the job is finished
-	_, err = controllerutil.CreateOrPatch(ctx, h.GetClient(), job, func() error {
-		job.Spec.TTLSecondsAfterFinished = j.job.Spec.TTLSecondsAfterFinished
-		return nil
-	})
-	if err != nil {
-		return ctrl.Result{}, err
+	// Calculate job status
+	if !j.exists {
+		if !j.HasChanged() {
+			// Job succeeded in the past and already got deleted
+			util.LogForObject(h, "Job succeeded and deleted", j.job)
+			return Succeeded, nil
+		} else {
+			// Created a new Job as hash changed but cannot read it back due to
+			// caching.
+			util.LogForObject(h, "Job is running (cache)", j.job)
+			return Running, nil
+		}
+	} else { // the Job exists
+		if j.job.Status.Failed > 0 {
+			util.LogForObject(h, "Job failed", j.job)
+			return Failed, nil
+		}
+		if j.job.Status.Succeeded > 0 {
+			util.LogForObject(h, "Job succeeded", j.job)
+			return Succeeded, nil
+		}
+		util.LogForObject(h, "Job is running", j.job)
+		return Running, nil
 	}
-
-	return ctrl.Result{}, nil
 }
 
 // HasChanged func
@@ -217,39 +229,6 @@ func DeleteJob(
 		return err
 	}
 	return nil
-}
-
-// waitOnJob func -  returns true if the job
-func waitOnJob(
-	ctx context.Context,
-	h *helper.Helper,
-	name string,
-	namespace string,
-	timeout time.Duration,
-) (ctrl.Result, error) {
-	// Check if this Job already exists
-	job, err := GetJobWithName(ctx, h, name, namespace)
-	if err != nil {
-		if k8s_errors.IsNotFound(err) {
-			h.GetLogger().Info("Job was not found.")
-			return ctrl.Result{RequeueAfter: timeout}, nil
-		}
-		h.GetLogger().Info("WaitOnJob err")
-		return ctrl.Result{}, err
-	}
-
-	if job.Status.Active > 0 {
-		h.GetLogger().Info("Job Status Active... requeuing")
-		return ctrl.Result{RequeueAfter: timeout}, nil
-	} else if job.Status.Succeeded > 0 {
-		h.GetLogger().Info("Job Status Successful")
-		return ctrl.Result{}, nil
-	} else if job.Status.Failed > 0 {
-		h.GetLogger().Info("Job Status Failed")
-		return ctrl.Result{}, k8s_errors.NewInternalError(errors.New("Job Failed. Check job logs"))
-	}
-	h.GetLogger().Info("Job Status incomplete... requeuing")
-	return ctrl.Result{RequeueAfter: timeout}, nil
 }
 
 // GetJobWithName func
