@@ -25,9 +25,11 @@ import (
 func (tc *TestHelper) GetJob(name types.NamespacedName) *batchv1.Job {
 	job := &batchv1.Job{}
 	gomega.Eventually(func(g gomega.Gomega) {
+		tc.logger.Info("Getting job", "name", name.Name)
 		g.Expect(tc.k8sClient.Get(tc.ctx, name, job)).Should(gomega.Succeed())
 	}, tc.timeout, tc.interval).Should(gomega.Succeed())
 
+	tc.logger.Info("Getting job succeeded", "name", name.Name, "job", job)
 	return job
 }
 
@@ -49,7 +51,9 @@ func (tc *TestHelper) SimulateJobFailure(name types.NamespacedName) {
 	// Simulate that the job is failed
 	job.Status.Failed = 1
 	job.Status.Active = 0
+	tc.logger.Info("Updating job to failure", "name", name.Name)
 	gomega.Expect(tc.k8sClient.Status().Update(tc.ctx, job)).To(gomega.Succeed())
+	tc.logger.Info("Updated job to failure", "name", name.Name)
 }
 
 // SimulateJobSuccess -
@@ -64,5 +68,7 @@ func (tc *TestHelper) SimulateJobSuccess(name types.NamespacedName) {
 	// Simulate that the job is succeeded
 	job.Status.Succeeded = 1
 	job.Status.Active = 0
+	tc.logger.Info("Updating job to success", "name", name.Name)
 	gomega.Expect(tc.k8sClient.Status().Update(tc.ctx, job)).To(gomega.Succeed())
+	tc.logger.Info("Updated job to success", "name", name.Name)
 }
