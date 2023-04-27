@@ -8,6 +8,8 @@ require (
 	github.com/openstack-k8s-operators/lib-common/modules/common v0.0.0-20230418081940-f3b854daa56c
 )
 
+require github.com/evanphx/json-patch v5.6.0+incompatible // indirect
+
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.1.2 // indirect

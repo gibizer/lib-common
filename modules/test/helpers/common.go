@@ -21,7 +21,9 @@ import (
 
 	"github.com/go-logr/logr"
 	ginkgo "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/condition"
+	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,4 +87,40 @@ func (tc *TestHelper) SkipInExistingCluster(message string) {
 		ginkgo.Skip("Skipped running against existing cluster. " + message)
 	}
 
+}
+
+// GetName -
+func (tc *TestHelper) GetName(obj client.Object) types.NamespacedName {
+	return types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
+}
+
+// DeleteInstance -
+func (tc *TestHelper) DeleteInstance(instance client.Object, opts ...client.DeleteOption) {
+	// We have to wait for the controller to fully delete the instance
+	tc.logger.Info(
+		"Deleting", "Name", instance.GetName(),
+		"Namespace", instance.GetNamespace(),
+		"Kind", instance.GetObjectKind(),
+	)
+
+	gomega.Eventually(func(g gomega.Gomega) {
+		name := types.NamespacedName{Name: instance.GetName(), Namespace: instance.GetNamespace()}
+		err := tc.k8sClient.Get(tc.ctx, name, instance)
+		// if it is already gone that is OK
+		if k8s_errors.IsNotFound(err) {
+			return
+		}
+		g.Expect(err).ShouldNot(gomega.HaveOccurred())
+
+		g.Expect(tc.k8sClient.Delete(tc.ctx, instance, opts...)).Should(gomega.Succeed())
+
+		err = tc.k8sClient.Get(tc.ctx, name, instance)
+		g.Expect(k8s_errors.IsNotFound(err)).To(gomega.BeTrue())
+	}, tc.timeout, tc.interval).Should(gomega.Succeed())
+
+	tc.logger.Info(
+		"Deleted", "Name", instance.GetName(),
+		"Namespace", instance.GetNamespace(),
+		"Kind", instance.GetObjectKind().GroupVersionKind().Kind,
+	)
 }
