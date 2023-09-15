@@ -37,15 +37,18 @@ func (tc *TestHelper) DeleteInstance(instance client.Object, opts ...client.Dele
 	gomega.Eventually(func(g gomega.Gomega) {
 		name := types.NamespacedName{Name: instance.GetName(), Namespace: instance.GetNamespace()}
 		err := tc.K8sClient.Get(tc.Ctx, name, instance)
+		tc.Logger.Info("DeleteInstance Get returned", "err", err)
 		// if it is already gone that is OK
 		if k8s_errors.IsNotFound(err) {
 			return
 		}
 		g.Expect(err).ShouldNot(gomega.HaveOccurred())
-
-		g.Expect(tc.K8sClient.Delete(tc.Ctx, instance, opts...)).Should(gomega.Succeed())
+		err = tc.K8sClient.Delete(tc.Ctx, instance, opts...)
+		tc.Logger.Info("DeleteInstance Delete returned", "err", err)
+		g.Expect(err).ShouldNot(gomega.HaveOccurred())
 
 		err = tc.K8sClient.Get(tc.Ctx, name, instance)
+		tc.Logger.Info("DeleteInstance Get after Delete returned", "err", err)
 		g.Expect(k8s_errors.IsNotFound(err)).To(gomega.BeTrue())
 	}, tc.Timeout, tc.Interval).Should(gomega.Succeed())
 
